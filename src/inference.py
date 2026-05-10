@@ -42,31 +42,49 @@ def _build_option_frame(article: str, question: str, options: Dict[str, str]) ->
 
 @dataclass
 class EnsembleVerifier:
-    count_lr: object
-    tfidf_lr: object
-    tfidf_svm: object
+    members: Dict[str, object]
+    weights: Dict[str, float]
 
     def predict_option_probabilities(self, option_df: pd.DataFrame) -> np.ndarray:
-        texts = option_df["combined_text"]
         scores = [
-            self.count_lr.predict_proba(texts)[:, 1],
-            self.tfidf_lr.predict_proba(texts)[:, 1],
-            self.tfidf_svm.predict_proba(texts)[:, 1],
+            self.weights[name] * _predict_model_probabilities(model, option_df)
+            for name, model in self.members.items()
         ]
-        return np.mean(scores, axis=0)
+        return np.sum(scores, axis=0)
+
+
+def _predict_model_probabilities(model, option_df: pd.DataFrame) -> np.ndarray:
+    if isinstance(model, dict) and model.get("model_type") == "tfidf_numeric_logistic_regression":
+        X_text = model["vectorizer"].transform(option_df["combined_text"])
+        X_numeric = model["scaler"].transform(numeric_feature_matrix(option_df))
+        from scipy.sparse import csr_matrix, hstack
+
+        X = hstack([X_text, csr_matrix(X_numeric)], format="csr")
+        return model["model"].predict_proba(X)[:, 1]
+    if isinstance(model, dict) and "model" in model:
+        return model["model"].predict_proba(
+            model["scaler"].transform(numeric_feature_matrix(option_df))
+        )[:, 1]
+    return model.predict_proba(option_df["combined_text"])[:, 1]
 
 
 def load_model_a(config: Config, model_name: str = "ensemble"):
     model_paths = config.model_a_paths()
     if model_name == "ensemble":
-        required = ["count_lr", "tfidf_lr", "tfidf_svm"]
+        if model_paths["ensemble"].exists():
+            ensemble_config = joblib.load(model_paths["ensemble"])
+            required = ensemble_config.get("members", ["count_lr", "tfidf_lr", "tfidf_svm"])
+            weights = ensemble_config.get("weights") or {name: 1.0 / len(required) for name in required}
+        else:
+            required = ["count_lr", "tfidf_lr", "tfidf_svm"]
+            weights = {name: 1.0 / len(required) for name in required}
         missing = [name for name in required if not model_paths[name].exists()]
         if missing:
             raise FileNotFoundError("Model files not found. Please run training first.")
+        members = {name: joblib.load(model_paths[name]) for name in required}
         return EnsembleVerifier(
-            count_lr=joblib.load(model_paths["count_lr"]),
-            tfidf_lr=joblib.load(model_paths["tfidf_lr"]),
-            tfidf_svm=joblib.load(model_paths["tfidf_svm"]),
+            members=members,
+            weights=weights,
         )
 
     if model_name not in model_paths or not model_paths[model_name].exists():
@@ -88,12 +106,8 @@ def predict_correct_option(
 
     if isinstance(model, EnsembleVerifier):
         probabilities = model.predict_option_probabilities(option_df)
-    elif isinstance(model, dict) and "model" in model:
-        probabilities = model["model"].predict_proba(
-            model["scaler"].transform(numeric_feature_matrix(option_df))
-        )[:, 1]
     else:
-        probabilities = model.predict_proba(option_df["combined_text"])[:, 1]
+        probabilities = _predict_model_probabilities(model, option_df)
 
     latency = time.time() - start_time
     best_index = int(np.argmax(probabilities))

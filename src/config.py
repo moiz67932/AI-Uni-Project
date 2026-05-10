@@ -26,7 +26,7 @@ class Config:
     quick_train_rows: int = 1000
 
     def __post_init__(self) -> None:
-        default_base = "/content/drive/MyDrive/AI_RACE_Project"
+        default_base = str(Path.cwd())
         chosen_base = self.base_dir or os.getenv("AI_RACE_PROJECT_BASE_DIR", default_base)
         self.BASE_DIR = Path(chosen_base)
 
@@ -81,6 +81,8 @@ class Config:
             "tfidf_lr": self.MODEL_A_MODELS_DIR / "tfidf_lr_pipeline.joblib",
             "tfidf_svm": self.MODEL_A_MODELS_DIR / "tfidf_svm_pipeline.joblib",
             "random_forest": self.MODEL_A_MODELS_DIR / "random_forest_features.joblib",
+            "feature_logistic_regression": self.MODEL_A_MODELS_DIR / "feature_logistic_regression.joblib",
+            "tfidf_numeric_lr": self.MODEL_A_MODELS_DIR / "tfidf_numeric_lr.joblib",
             "kmeans": self.MODEL_A_MODELS_DIR / "kmeans_model.joblib",
             "ensemble": self.MODEL_A_MODELS_DIR / "ensemble_model.joblib",
         }

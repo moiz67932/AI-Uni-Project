@@ -32,7 +32,7 @@ from sklearn.svm import LinearSVC
 
 from src.checkpointing import CheckpointManager, safe_save
 from src.config import Config
-from src.features import numeric_feature_matrix
+from src.features import FEATURE_COLUMNS, numeric_feature_matrix
 from src.utils import save_json
 
 
@@ -140,7 +140,11 @@ def train_or_load_random_forest(
 ) -> dict:
     if path.exists():
         try:
-            return joblib.load(path)
+            package = joblib.load(path)
+            if package.get("feature_columns") == FEATURE_COLUMNS:
+                return package
+            print(f"Warning: {path.name} uses old numeric features. Retraining.")
+            path.unlink()
         except Exception as exc:
             corrupt_path = path.with_suffix(path.suffix + ".corrupt")
             path.replace(corrupt_path)
@@ -156,7 +160,96 @@ def train_or_load_random_forest(
         n_jobs=-1,
     )
     model.fit(X_train_scaled, train_opt["label"])
-    package = {"scaler": scaler, "model": model}
+    package = {
+        "model_type": "numeric_random_forest",
+        "feature_columns": FEATURE_COLUMNS,
+        "scaler": scaler,
+        "model": model,
+    }
+    safe_save(path, package)
+    return package
+
+
+def train_or_load_feature_logistic_regression(
+    config: Config,
+    train_opt: pd.DataFrame,
+    path: Path,
+) -> dict:
+    if path.exists():
+        try:
+            package = joblib.load(path)
+            if package.get("feature_columns") == FEATURE_COLUMNS:
+                return package
+            print(f"Warning: {path.name} uses old numeric features. Retraining.")
+            path.unlink()
+        except Exception as exc:
+            corrupt_path = path.with_suffix(path.suffix + ".corrupt")
+            path.replace(corrupt_path)
+            print(f"Warning: {path.name} was corrupted and renamed to {corrupt_path.name}. Retraining. {exc}")
+
+    X_train = numeric_feature_matrix(train_opt)
+    scaler = MaxAbsScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    model = LogisticRegression(
+        max_iter=1000,
+        class_weight="balanced",
+        solver="liblinear",
+        random_state=config.random_seed,
+    )
+    model.fit(X_train_scaled, train_opt["label"])
+    package = {
+        "model_type": "numeric_logistic_regression",
+        "feature_columns": FEATURE_COLUMNS,
+        "scaler": scaler,
+        "model": model,
+    }
+    safe_save(path, package)
+    return package
+
+
+def train_or_load_tfidf_numeric_lr(
+    config: Config,
+    train_opt: pd.DataFrame,
+    path: Path,
+) -> dict:
+    if path.exists():
+        try:
+            package = joblib.load(path)
+            if package.get("feature_columns") == FEATURE_COLUMNS:
+                return package
+            print(f"Warning: {path.name} uses old numeric features. Retraining.")
+            path.unlink()
+        except Exception as exc:
+            corrupt_path = path.with_suffix(path.suffix + ".corrupt")
+            path.replace(corrupt_path)
+            print(f"Warning: {path.name} was corrupted and renamed to {corrupt_path.name}. Retraining. {exc}")
+
+    vectorizer = TfidfVectorizer(
+        max_features=config.tfidf_max_features,
+        stop_words="english",
+        sublinear_tf=True,
+        ngram_range=config.ngram_range,
+        min_df=config.min_df,
+        max_df=config.max_df,
+    )
+    scaler = MaxAbsScaler()
+    X_text = vectorizer.fit_transform(train_opt["combined_text"])
+    X_numeric = scaler.fit_transform(csr_matrix(numeric_feature_matrix(train_opt)))
+    X_train = hstack([X_text, X_numeric], format="csr")
+    model = LogisticRegression(
+        max_iter=1000,
+        class_weight="balanced",
+        solver="liblinear",
+        random_state=config.random_seed,
+    )
+    model.fit(X_train, train_opt["label"])
+    package = {
+        "model_type": "tfidf_numeric_logistic_regression",
+        "feature_columns": FEATURE_COLUMNS,
+        "vectorizer": vectorizer,
+        "scaler": scaler,
+        "model": model,
+    }
     safe_save(path, package)
     return package
 
@@ -170,6 +263,26 @@ def _safe_predict_proba(model, texts: pd.Series) -> np.ndarray:
         return 1.0 / (1.0 + np.exp(-scores))
     preds = model.predict(texts)
     return np.asarray(preds, dtype=float)
+
+
+def _predict_numeric_package(package: dict, option_df: pd.DataFrame) -> np.ndarray:
+    X_numeric = package["scaler"].transform(numeric_feature_matrix(option_df))
+    return package["model"].predict_proba(X_numeric)[:, 1]
+
+
+def _predict_tfidf_numeric_package(package: dict, option_df: pd.DataFrame) -> np.ndarray:
+    X_text = package["vectorizer"].transform(option_df["combined_text"])
+    X_numeric = package["scaler"].transform(csr_matrix(numeric_feature_matrix(option_df)))
+    X = hstack([X_text, X_numeric], format="csr")
+    return package["model"].predict_proba(X)[:, 1]
+
+
+def predict_model_probabilities(model, option_df: pd.DataFrame) -> np.ndarray:
+    if isinstance(model, dict) and model.get("model_type") == "tfidf_numeric_logistic_regression":
+        return _predict_tfidf_numeric_package(model, option_df)
+    if isinstance(model, dict) and "model" in model:
+        return _predict_numeric_package(model, option_df)
+    return _safe_predict_proba(model, option_df["combined_text"])
 
 
 def evaluate_option_level_from_scores(
@@ -213,6 +326,20 @@ def evaluate_question_level(option_df: pd.DataFrame, probabilities: np.ndarray) 
         "question_level_accuracy": float(accuracy),
         "num_questions": int(best["question_id"].nunique()),
     }
+
+
+def _ensemble_weights_from_validation(validation_scores: dict[str, dict]) -> dict[str, float]:
+    raw_scores = {
+        name: max(
+            0.0,
+            metrics["question_level"]["question_level_accuracy"],
+        )
+        for name, metrics in validation_scores.items()
+    }
+    total = sum(raw_scores.values())
+    if total <= 0:
+        return {name: 1.0 / len(raw_scores) for name in raw_scores}
+    return {name: score / total for name, score in raw_scores.items()}
 
 
 def plot_confusion_matrix(cm: list[list[int]], path: Path) -> None:
@@ -269,33 +396,79 @@ def train_and_evaluate_model_a(
             results["notes"].append(f"{name} predicts the positive class poorly and should be treated as weak.")
 
     rf_package = train_or_load_random_forest(config, train_opt, model_paths["random_forest"])
-    X_test_rf = numeric_feature_matrix(test_opt)
-    X_test_rf = rf_package["scaler"].transform(X_test_rf)
-    rf_probabilities = rf_package["model"].predict_proba(X_test_rf)[:, 1]
+    rf_probabilities = predict_model_probabilities(rf_package, test_opt)
     results["models"]["random_forest"] = {
         "option_level": evaluate_option_level_from_scores(test_opt, rf_probabilities),
         "question_level": evaluate_question_level(test_opt, rf_probabilities),
     }
     trained_models["random_forest"] = rf_package
 
-    ensemble_probabilities = np.mean(
+    feature_lr_package = train_or_load_feature_logistic_regression(
+        config,
+        train_opt,
+        model_paths["feature_logistic_regression"],
+    )
+    feature_lr_probabilities = predict_model_probabilities(feature_lr_package, test_opt)
+    results["models"]["feature_logistic_regression"] = {
+        "option_level": evaluate_option_level_from_scores(test_opt, feature_lr_probabilities),
+        "question_level": evaluate_question_level(test_opt, feature_lr_probabilities),
+    }
+    trained_models["feature_logistic_regression"] = feature_lr_package
+
+    tfidf_numeric_package = train_or_load_tfidf_numeric_lr(
+        config,
+        train_opt,
+        model_paths["tfidf_numeric_lr"],
+    )
+    tfidf_numeric_probabilities = predict_model_probabilities(tfidf_numeric_package, test_opt)
+    results["models"]["tfidf_numeric_lr"] = {
+        "option_level": evaluate_option_level_from_scores(test_opt, tfidf_numeric_probabilities),
+        "question_level": evaluate_question_level(test_opt, tfidf_numeric_probabilities),
+    }
+    trained_models["tfidf_numeric_lr"] = tfidf_numeric_package
+
+    simple_ensemble_members = ["count_lr", "tfidf_lr", "tfidf_svm"]
+    simple_ensemble_probabilities = np.mean(
+        [predict_model_probabilities(trained_models[name], test_opt) for name in simple_ensemble_members],
+        axis=0,
+    )
+    results["models"]["simple_ensemble"] = {
+        "option_level": evaluate_option_level_from_scores(test_opt, simple_ensemble_probabilities),
+        "question_level": evaluate_question_level(test_opt, simple_ensemble_probabilities),
+    }
+
+    weighted_members = ["count_lr", "tfidf_lr", "tfidf_svm", "random_forest", "tfidf_numeric_lr"]
+    validation_scores = {}
+    for name in weighted_members:
+        val_probabilities = predict_model_probabilities(trained_models[name], val_opt)
+        validation_scores[name] = {
+            "option_level": evaluate_option_level_from_scores(val_opt, val_probabilities),
+            "question_level": evaluate_question_level(val_opt, val_probabilities),
+        }
+    weights = _ensemble_weights_from_validation(validation_scores)
+    ensemble_probabilities = np.sum(
         [
-            _safe_predict_proba(trained_models["count_lr"], test_opt["combined_text"]),
-            _safe_predict_proba(trained_models["tfidf_lr"], test_opt["combined_text"]),
-            _safe_predict_proba(trained_models["tfidf_svm"], test_opt["combined_text"]),
+            weights[name] * predict_model_probabilities(trained_models[name], test_opt)
+            for name in weighted_members
         ],
         axis=0,
     )
-    ensemble_metrics = {
+    results["models"]["ensemble"] = {
         "option_level": evaluate_option_level_from_scores(test_opt, ensemble_probabilities),
         "question_level": evaluate_question_level(test_opt, ensemble_probabilities),
     }
-    results["models"]["ensemble"] = ensemble_metrics
+    results["validation"] = {
+        "ensemble_weight_basis": "question_level_accuracy",
+        "ensemble_member_scores": validation_scores,
+        "ensemble_weights": weights,
+    }
     safe_save(
         model_paths["ensemble"],
         {
-            "type": "simple_average",
-            "members": ["count_lr_pipeline.joblib", "tfidf_lr_pipeline.joblib", "tfidf_svm_pipeline.joblib"],
+            "type": "validation_weighted_average",
+            "weight_basis": "question_level_accuracy",
+            "members": weighted_members,
+            "weights": weights,
         },
     )
 
@@ -303,9 +476,13 @@ def train_and_evaluate_model_a(
         ["question_id", "option_label", "correct_answer", "label", "combined_text"]
     ].copy()
     sample_predictions["ensemble_probability"] = ensemble_probabilities
-    sample_predictions["count_lr_probability"] = _safe_predict_proba(trained_models["count_lr"], test_opt["combined_text"])
-    sample_predictions["tfidf_lr_probability"] = _safe_predict_proba(trained_models["tfidf_lr"], test_opt["combined_text"])
-    sample_predictions["tfidf_svm_probability"] = _safe_predict_proba(trained_models["tfidf_svm"], test_opt["combined_text"])
+    sample_predictions["simple_ensemble_probability"] = simple_ensemble_probabilities
+    sample_predictions["count_lr_probability"] = predict_model_probabilities(trained_models["count_lr"], test_opt)
+    sample_predictions["tfidf_lr_probability"] = predict_model_probabilities(trained_models["tfidf_lr"], test_opt)
+    sample_predictions["tfidf_svm_probability"] = predict_model_probabilities(trained_models["tfidf_svm"], test_opt)
+    sample_predictions["random_forest_probability"] = rf_probabilities
+    sample_predictions["feature_logistic_regression_probability"] = feature_lr_probabilities
+    sample_predictions["tfidf_numeric_lr_probability"] = tfidf_numeric_probabilities
     sample_predictions.to_csv(config.SAMPLE_PREDICTIONS_FILE, index=False)
 
     plot_confusion_matrix(

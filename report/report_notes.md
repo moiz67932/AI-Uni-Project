@@ -17,11 +17,17 @@ This is still classical feature engineering and worked well enough for a student
 
 ## Why question-level accuracy matters
 
-Option-level accuracy can look misleading because each question creates 4 rows and only 1 is positive. A model can score around 75% by predicting many negatives. That is why the final project reports:
+Random guessing has a 25% question-level baseline because each question has 4 options.
 
-- positive-class F1
+Option-level accuracy can look misleading because each question creates 4 rows and only 1 is positive. A model can score around 75% by predicting many negatives. That is why the final project treats question-level accuracy as the main Model A metric and also reports:
+
+- `positive_class_precision`
+- `positive_class_recall`
+- `positive_class_f1`
 - confusion matrix
 - question-level accuracy after comparing A, B, C, and D for each question
+
+The best current full-run model before this update was `random_forest` at about 0.2664 question-level accuracy. The final selected model is now chosen automatically in `final_metrics.json` using the highest question-level accuracy, so the weighted ensemble is not assumed to be final unless it actually wins.
 
 ## Unsupervised component
 

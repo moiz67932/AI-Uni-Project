@@ -152,7 +152,10 @@ Model A answer verification:
 - TFIDF LR
 - TFIDF SVM with calibration
 - RandomForest on numeric features
-- Soft-voting ensemble of the three text models
+- Feature Logistic Regression on numeric features
+- TFIDF Numeric LR using sparse TF-IDF plus numeric features
+- Simple soft-voting ensemble of the three text models
+- Validation-weighted ensemble saved as `ensemble_model.joblib`
 - MiniBatchKMeans unsupervised component
 
 Model B generation:
@@ -170,7 +173,9 @@ Classification:
 - weighted F1
 - precision
 - recall
-- positive-class precision, recall, and F1
+- `positive_class_precision`
+- `positive_class_recall`
+- `positive_class_f1`
 - confusion matrix
 - TP, TN, FP, FN
 - question-level accuracy

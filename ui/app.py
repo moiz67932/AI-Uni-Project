@@ -57,7 +57,18 @@ if "used_all_hints" not in st.session_state:
     st.session_state.used_all_hints = False
 
 st.sidebar.title("Controls")
-model_name = st.sidebar.selectbox("Model selection", ["ensemble", "count_lr", "tfidf_lr", "tfidf_svm"])
+model_name = st.sidebar.selectbox(
+    "Model selection",
+    [
+        "random_forest",
+        "ensemble",
+        "tfidf_numeric_lr",
+        "feature_logistic_regression",
+        "count_lr",
+        "tfidf_lr",
+        "tfidf_svm",
+    ],
+)
 data_source = st.sidebar.radio("Data source", ["Random RACE sample", "Paste custom article"])
 
 if st.sidebar.button("Load random sample"):

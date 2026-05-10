@@ -185,12 +185,18 @@ def main() -> int:
     model_b_results = evaluate_model_b(config, prepared["test_df"], quick=args.quick)
     print("Model B evaluation complete.")
 
+    best_model_name, best_model_metrics = max(
+        model_a_results["models"].items(),
+        key=lambda item: item[1]["question_level"]["question_level_accuracy"],
+    )
     final_metrics = {
         "eda_summary_path": str(config.EDA_SUMMARY_FILE),
-        "model_a_best_question_accuracy": max(
-            item["question_level"]["question_level_accuracy"] for item in model_a_results["models"].values()
-        ),
+        "best_model_name": best_model_name,
+        "best_question_accuracy": best_model_metrics["question_level"]["question_level_accuracy"],
+        "best_option_macro_f1": best_model_metrics["option_level"]["macro_f1"],
+        "best_positive_f1": best_model_metrics["option_level"]["positive_class_f1"],
         "ensemble_question_accuracy": model_a_results["models"]["ensemble"]["question_level"]["question_level_accuracy"],
+        "model_a_best_question_accuracy": best_model_metrics["question_level"]["question_level_accuracy"],
         "unsupervised_cluster_purity_mean": unsupervised_results["cluster_purity_mean"],
         "model_b_question_bleu": model_b_results["question_generation"]["bleu"],
         "model_b_distractor_rougeL": model_b_results["distractor_generation"]["rougeL_f1"],
